@@ -1,10 +1,11 @@
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
 
+// 在此寫死你要尋找的限定關鍵字（可直接修改此字串）
+const HARDCODED_KEYWORD = "A-Lin","A-lin";
+
 const TARGET_URL = process.env.TARGET_URL;
-const WATCH_KEYWORD = process.env.WATCH_KEYWORD || "更新";
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
-const SEND_EXTRA_ALERT = process.env.SEND_EXTRA_ALERT !== "false";
 const STATE_FILE = "state.json";
 
 if (!TARGET_URL || !DISCORD_WEBHOOK_URL) {
@@ -63,7 +64,7 @@ function buildStatusEmbed({ matched, snippet, errorMsg }) {
           url: TARGET_URL,
           color: 0xe74c3c,
           fields: [
-            { name: "限定文字", value: `\`${WATCH_KEYWORD}\``, inline: true },
+            { name: "限定關鍵字", value: `\`${HARDCODED_KEYWORD}\``, inline: true },
             { name: "最後巡檢時間", value: `\`${nowStr}\``, inline: true },
             { name: "錯誤訊息", value: errorMsg.slice(0, 400), inline: false }
           ],
@@ -78,16 +79,16 @@ function buildStatusEmbed({ matched, snippet, errorMsg }) {
     embeds: [
       {
         title: matched
-          ? `🟢 已出現更新文字：「${WATCH_KEYWORD}」`
-          : `🔵 監控中（尚未出現：「${WATCH_KEYWORD}」）`,
+          ? `🟢 已出現關鍵字：「${HARDCODED_KEYWORD}」`
+          : `🔵 監控中（尚未出現：「${HARDCODED_KEYWORD}」）`,
         url: TARGET_URL,
         description: matched
           ? `**擷取片段：**\n${snippet.slice(0, 500)}`
-          : "目前頁面純文字中尚未偵測到指定關鍵字，每 5 分鐘自動巡檢並原地更新此狀態。",
+          : "目前頁面純文字中尚未偵測到指定關鍵字，將持續巡檢並原地更新此狀態。",
         color: matched ? 0x2ecc71 : 0x3498db,
         fields: [
-          { name: "監控狀態", value: matched ? "已命中更新" : "等待更新中", inline: true },
-          { name: "限定文字", value: `\`${WATCH_KEYWORD}\``, inline: true },
+          { name: "監控狀態", value: matched ? "已命中關鍵字" : "等待出現中", inline: true },
+          { name: "限定關鍵字", value: `\`${HARDCODED_KEYWORD}\``, inline: true },
           { name: "最後更新時間", value: `\`${nowStr}\``, inline: false }
         ],
         timestamp: new Date().toISOString()
@@ -108,7 +109,6 @@ async function upsertPinnedStatusMessage(messageId, payload) {
       return messageId;
     }
 
-    // 若訊息在 Discord 被手動刪除（404），則重新建立一則新的固定訊息
     if (patchRes.status !== 404) {
       const errText = await patchRes.text();
       throw new Error(`更新固定訊息失敗 (${patchRes.status}): ${errText}`);
@@ -130,16 +130,20 @@ async function upsertPinnedStatusMessage(messageId, payload) {
   return created.id;
 }
 
-async function sendExtraAlert(snippet) {
+async function sendSingleHitCard(snippet) {
+  const nowStr = formatTaiwanTime();
   const payload = {
     username: "網頁更新即時通知",
-    content: `🚨 偵測到限定文字 **「${WATCH_KEYWORD}」**！`,
     embeds: [
       {
-        title: `網頁出現更新：${WATCH_KEYWORD}`,
+        title: `🚨 偵測到限定關鍵字：「${HARDCODED_KEYWORD}」`,
         url: TARGET_URL,
-        description: snippet.slice(0, 500),
+        description: `**擷取內容：**\n${snippet.slice(0, 600)}`,
         color: 0xf1c40f,
+        fields: [
+          { name: "觸發關鍵字", value: `\`${HARDCODED_KEYWORD}\``, inline: true },
+          { name: "偵測時間", value: `\`${nowStr}\``, inline: true }
+        ],
         timestamp: new Date().toISOString()
       }
     ]
@@ -153,7 +157,7 @@ async function sendExtraAlert(snippet) {
 
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`額外通知發送失敗 (${res.status}): ${errText}`);
+    throw new Error(`單張通知卡片發送失敗 (${res.status}): ${errText}`);
   }
 }
 
@@ -175,7 +179,7 @@ async function main() {
 
     const html = await res.text();
     const plainText = htmlToPlainText(html);
-    const index = plainText.indexOf(WATCH_KEYWORD);
+    const index = plainText.indexOf(HARDCODED_KEYWORD);
     const matched = index !== -1;
 
     let snippet = "";
@@ -183,15 +187,15 @@ async function main() {
 
     if (matched) {
       const start = Math.max(0, index - 60);
-      const end = Math.min(plainText.length, index + WATCH_KEYWORD.length + 120);
+      const end = Math.min(plainText.length, index + HARDCODED_KEYWORD.length + 120);
       snippet = plainText.slice(start, end);
       contentHash = crypto
         .createHash("sha256")
-        .update(`${WATCH_KEYWORD}:${snippet}`)
+        .update(`${HARDCODED_KEYWORD}:${snippet}`)
         .digest("hex");
 
-      if (SEND_EXTRA_ALERT && state.lastNotifiedHash !== contentHash) {
-        await sendExtraAlert(snippet);
+      if (state.lastNotifiedHash !== contentHash) {
+        await sendSingleHitCard(snippet);
       }
     }
 
@@ -205,7 +209,7 @@ async function main() {
 
     console.log(
       matched
-        ? `已原地更新狀態訊息 (${nextMessageId})，偵測到關鍵字「${WATCH_KEYWORD}」。`
+        ? `已原地更新狀態訊息 (${nextMessageId})，偵測到關鍵字「${HARDCODED_KEYWORD}」。`
         : `已原地更新狀態訊息 (${nextMessageId})，尚未偵測到關鍵字。`
     );
   } catch (err) {
