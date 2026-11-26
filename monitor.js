@@ -1,8 +1,7 @@
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
 
-// 在此寫死你要尋找的限定關鍵字（可直接修改此字串）
-const HARDCODED_KEYWORD = "A-Lin","A-lin";
+const HARDCODED_KEYWORD = "A-Lin";
 
 const TARGET_URL = process.env.TARGET_URL;
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
@@ -20,6 +19,48 @@ function htmlToPlainText(html) {
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function findKeywordMatch(html, keyword) {
+  const lowerKeyword = keyword.toLowerCase();
+
+  // 1. 先比對純文字（不分大小寫）
+  const plainText = htmlToPlainText(html);
+  const plainLower = plainText.toLowerCase();
+  const plainIdx = plainLower.indexOf(lowerKeyword);
+
+  if (plainIdx !== -1) {
+    const start = Math.max(0, plainIdx - 60);
+    const end = Math.min(plainText.length, plainIdx + keyword.length + 120);
+    return {
+      matched: true,
+      source: "plainText",
+      snippet: plainText.slice(start, end)
+    };
+  }
+
+  // 2. 若純文字沒抓到，再比對原始 HTML（包含內嵌 JSON / 屬性等）
+  const rawLower = html.toLowerCase();
+  const rawIdx = rawLower.indexOf(lowerKeyword);
+
+  if (rawIdx !== -1) {
+    const cleanedRaw = html.replace(/\s+/g, " ");
+    const cleanedLower = cleanedRaw.toLowerCase();
+    const idx = cleanedLower.indexOf(lowerKeyword);
+    const start = Math.max(0, idx - 60);
+    const end = Math.min(cleanedRaw.length, idx + keyword.length + 120);
+    return {
+      matched: true,
+      source: "rawHtml",
+      snippet: cleanedRaw.slice(start, end)
+    };
+  }
+
+  return {
+    matched: false,
+    source: "none",
+    snippet: ""
+  };
 }
 
 async function readState() {
@@ -52,7 +93,7 @@ function formatTaiwanTime(date = new Date()) {
   }).format(date);
 }
 
-function buildStatusEmbed({ matched, snippet, errorMsg }) {
+function buildStatusEmbed({ matched, snippet, source, errorMsg }) {
   const nowStr = formatTaiwanTime();
 
   if (errorMsg) {
@@ -64,7 +105,7 @@ function buildStatusEmbed({ matched, snippet, errorMsg }) {
           url: TARGET_URL,
           color: 0xe74c3c,
           fields: [
-            { name: "限定關鍵字", value: `\`${HARDCODED_KEYWORD}\``, inline: true },
+            { name: "限定文字", value: `\`${HARDCODED_KEYWORD}\``, inline: true },
             { name: "最後巡檢時間", value: `\`${nowStr}\``, inline: true },
             { name: "錯誤訊息", value: errorMsg.slice(0, 400), inline: false }
           ],
@@ -83,12 +124,12 @@ function buildStatusEmbed({ matched, snippet, errorMsg }) {
           : `🔵 監控中（尚未出現：「${HARDCODED_KEYWORD}」）`,
         url: TARGET_URL,
         description: matched
-          ? `**擷取片段：**\n${snippet.slice(0, 500)}`
-          : "目前頁面純文字中尚未偵測到指定關鍵字，將持續巡檢並原地更新此狀態。",
+          ? `**命中來源：** \`${source}\`\n**擷取片段：**\n${snippet.slice(0, 500)}`
+          : "目前抓到的網頁內容中尚未偵測到指定關鍵字（可能為動態渲染或雲端 IP 限制），每 5 分鐘自動巡檢並原地更新此狀態。",
         color: matched ? 0x2ecc71 : 0x3498db,
         fields: [
-          { name: "監控狀態", value: matched ? "已命中關鍵字" : "等待出現中", inline: true },
-          { name: "限定關鍵字", value: `\`${HARDCODED_KEYWORD}\``, inline: true },
+          { name: "監控狀態", value: matched ? "已命中關鍵字" : "等待更新中", inline: true },
+          { name: "限定文字", value: `\`${HARDCODED_KEYWORD}\``, inline: true },
           { name: "最後更新時間", value: `\`${nowStr}\``, inline: false }
         ],
         timestamp: new Date().toISOString()
@@ -130,7 +171,7 @@ async function upsertPinnedStatusMessage(messageId, payload) {
   return created.id;
 }
 
-async function sendSingleHitCard(snippet) {
+async function sendSingleHitCard(snippet, source) {
   const nowStr = formatTaiwanTime();
   const payload = {
     username: "網頁更新即時通知",
@@ -142,7 +183,8 @@ async function sendSingleHitCard(snippet) {
         color: 0xf1c40f,
         fields: [
           { name: "觸發關鍵字", value: `\`${HARDCODED_KEYWORD}\``, inline: true },
-          { name: "偵測時間", value: `\`${nowStr}\``, inline: true }
+          { name: "比對來源", value: `\`${source}\``, inline: true },
+          { name: "偵測時間", value: `\`${nowStr}\``, inline: false }
         ],
         timestamp: new Date().toISOString()
       }
@@ -168,7 +210,10 @@ async function main() {
     const res = await fetch(TARGET_URL, {
       headers: {
         "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept":
+          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
         "Cache-Control": "no-cache"
       }
     });
@@ -178,43 +223,48 @@ async function main() {
     }
 
     const html = await res.text();
-    const plainText = htmlToPlainText(html);
-    const index = plainText.indexOf(HARDCODED_KEYWORD);
-    const matched = index !== -1;
+    console.log(`已抓取 HTML 長度：${html.length} 字元`);
 
-    let snippet = "";
+    const result = findKeywordMatch(html, HARDCODED_KEYWORD);
     let contentHash = "";
 
-    if (matched) {
-      const start = Math.max(0, index - 60);
-      const end = Math.min(plainText.length, index + HARDCODED_KEYWORD.length + 120);
-      snippet = plainText.slice(start, end);
+    if (result.matched) {
       contentHash = crypto
         .createHash("sha256")
-        .update(`${HARDCODED_KEYWORD}:${snippet}`)
+        .update(`${HARDCODED_KEYWORD}:${result.snippet}`)
         .digest("hex");
 
       if (state.lastNotifiedHash !== contentHash) {
-        await sendSingleHitCard(snippet);
+        await sendSingleHitCard(result.snippet, result.source);
       }
     }
 
-    const statusPayload = buildStatusEmbed({ matched, snippet, errorMsg: "" });
+    const statusPayload = buildStatusEmbed({
+      matched: result.matched,
+      snippet: result.snippet,
+      source: result.source,
+      errorMsg: ""
+    });
     const nextMessageId = await upsertPinnedStatusMessage(state.messageId, statusPayload);
 
     await writeState({
       messageId: nextMessageId,
-      lastNotifiedHash: matched ? contentHash : state.lastNotifiedHash
+      lastNotifiedHash: result.matched ? contentHash : state.lastNotifiedHash
     });
 
     console.log(
-      matched
-        ? `已原地更新狀態訊息 (${nextMessageId})，偵測到關鍵字「${HARDCODED_KEYWORD}」。`
-        : `已原地更新狀態訊息 (${nextMessageId})，尚未偵測到關鍵字。`
+      result.matched
+        ? `已原地更新狀態訊息 (${nextMessageId})，命中來源：${result.source}。`
+        : `已原地更新狀態訊息 (${nextMessageId})，尚未命中關鍵字。`
     );
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
-    const errorPayload = buildStatusEmbed({ matched: false, snippet: "", errorMsg });
+    const errorPayload = buildStatusEmbed({
+      matched: false,
+      snippet: "",
+      source: "none",
+      errorMsg
+    });
     const nextMessageId = await upsertPinnedStatusMessage(state.messageId, errorPayload);
 
     await writeState({
