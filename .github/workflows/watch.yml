@@ -1,6 +1,10 @@
 name: Watch Website Update
 
 on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "state.json"
   repository_dispatch:
     types: [check-update]
   workflow_dispatch:
@@ -23,7 +27,6 @@ jobs:
       - name: Run monitor script
         env:
           TARGET_URL: ${{ vars.TARGET_URL }}
-          WATCH_KEYWORD: ${{ vars.WATCH_KEYWORD }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: node monitor.js
 
